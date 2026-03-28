@@ -1,0 +1,190 @@
+version: '3.9'
+
+networks:
+  sahayasetu-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+
+services:
+
+  # ── Databases ────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ss-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sahayasetu
+      POSTGRES_PASSWORD: secret
+      POSTGRES_MULTIPLE_DATABASES: sahayasetu_auth,sahayasetu_requests
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh
+    ports:
+      - '5432:5432'
+    networks:
+      - sahayasetu-net
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U sahayasetu']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ss-redis
+    restart: unless-stopped
+    command: redis-server --requirepass secret --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - '6379:6379'
+    networks:
+      - sahayasetu-net
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'secret', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Microservices ─────────────────────────────────────────────────────────
+
+  auth-service:
+    build:
+      context: ../..
+      dockerfile: services/auth-service/Dockerfile
+    container_name: ss-auth
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: sahayasetu
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: sahayasetu_auth
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: secret
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      JWT_ACCESS_EXPIRY: 15m
+      JWT_REFRESH_EXPIRY: 7d
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      CORS_ORIGINS: http://localhost:3000,http://localhost:8080
+    ports:
+      - '3001:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sahayasetu-net
+
+  request-service:
+    build:
+      context: ../..
+      dockerfile: services/request-service/Dockerfile
+    container_name: ss-requests
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3002
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: sahayasetu
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: sahayasetu_requests
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: secret
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      CORS_ORIGINS: http://localhost:3000,http://localhost:8080
+    ports:
+      - '3002:3002'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sahayasetu-net
+
+  media-service:
+    build:
+      context: ../..
+      dockerfile: services/media-service/Dockerfile
+    container_name: ss-media
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3003
+      MONGODB_URI: ${MONGODB_URI}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION:-ap-south-1}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-sahayasetu-media}
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+    ports:
+      - '3003:3003'
+    depends_on:
+      - redis
+    networks:
+      - sahayasetu-net
+
+  notification-service:
+    build:
+      context: ../..
+      dockerfile: services/notification-service/Dockerfile
+    container_name: ss-notifications
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3004
+      MONGODB_URI: ${MONGODB_URI}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: secret
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      FIREBASE_SERVICE_ACCOUNT: ${FIREBASE_SERVICE_ACCOUNT}
+    ports:
+      - '3004:3004'
+    networks:
+      - sahayasetu-net
+
+  api-gateway:
+    build:
+      context: ../..
+      dockerfile: services/api-gateway/Dockerfile
+    container_name: ss-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      AUTH_SERVICE_URL: http://auth-service:3001
+      REQUEST_SERVICE_URL: http://request-service:3002
+      MEDIA_SERVICE_URL: http://media-service:3003
+      NOTIFICATION_SERVICE_URL: http://notification-service:3004
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      RATE_LIMIT_MAX: 100
+      RATE_LIMIT_WINDOW_MS: 60000
+    ports:
+      - '8080:8080'
+    depends_on:
+      - auth-service
+      - request-service
+      - media-service
+      - notification-service
+    networks:
+      - sahayasetu-net

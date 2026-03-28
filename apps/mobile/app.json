@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "SahayaSetu",
+    "slug": "sahayasetu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#4F46E5"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "in.sahayasetu.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "SahayaSetu needs your location to attach it to your help request.",
+        "NSLocationAlwaysUsageDescription": "SahayaSetu uses location to track field agent proximity.",
+        "NSCameraUsageDescription": "SahayaSetu needs camera access to capture verification photos.",
+        "NSMicrophoneUsageDescription": "SahayaSetu needs microphone access for voice notes.",
+        "NSPhotoLibraryUsageDescription": "SahayaSetu needs photo library access to attach evidence."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4F46E5"
+      },
+      "package": "in.sahayasetu.app",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-location",
+      "expo-camera",
+      "expo-image-picker",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#4F46E5"
+        }
+      ]
+    ],
+    "scheme": "sahayasetu",
+    "extra": {
+      "API_URL": "http://localhost:8080/api/v1",
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}

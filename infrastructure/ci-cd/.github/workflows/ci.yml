@@ -1,0 +1,169 @@
+name: SahayaSetu CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+
+jobs:
+  # ── Lint & Type Check ────────────────────────────────────────────────────
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run build
+
+  # ── Unit Tests ───────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sahayasetu
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: sahayasetu_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        env:
+          NODE_ENV: test
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: sahayasetu
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: sahayasetu_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: test-secret-key
+          MONGODB_URI: ${{ secrets.MONGODB_TEST_URI }}
+        run: pnpm run test -- --coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ── Docker Build ──────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        service: [auth-service, request-service, media-service, notification-service, api-gateway]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy (main branch only) ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push all services
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          for SERVICE in auth-service request-service media-service notification-service api-gateway; do
+            docker build -t $ECR_REGISTRY/sahayasetu-$SERVICE:$IMAGE_TAG \
+              -f services/$SERVICE/Dockerfile .
+            docker push $ECR_REGISTRY/sahayasetu-$SERVICE:$IMAGE_TAG
+            docker tag $ECR_REGISTRY/sahayasetu-$SERVICE:$IMAGE_TAG \
+              $ECR_REGISTRY/sahayasetu-$SERVICE:latest
+            docker push $ECR_REGISTRY/sahayasetu-$SERVICE:latest
+          done
+
+      - name: Update ECS services
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          for SERVICE in auth-service request-service media-service notification-service api-gateway; do
+            aws ecs update-service \
+              --cluster sahayasetu-cluster \
+              --service $SERVICE \
+              --force-new-deployment \
+              --region ap-south-1
+          done
